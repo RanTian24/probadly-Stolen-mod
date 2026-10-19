@@ -1,0 +1,10 @@
+{
+  "machines": [
+    {
+      "id": "module_planner:preview_bench",
+      "ui": "psui",
+      "panel": "preview",
+      "batteryPowered": false
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "items": [
+    {
+      "id": "module_planner:preview_bench",
+      "name": "排版预览台",
+      "desc": "模组规划器配套: 双击打开, 将F5规划器的最优排版以游戏原生槽位渲染预览。若全店找不到本台, 读档时自动补发一台(后仓)。",
+      "directory": "StationMachinery",
+      "template": "desequencer",
+      "value": 100,
+      "shape": {
+        "w": 3,
+        "h": 3,
+        "cells": [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]]
+      }
+    }
+  ]
+}

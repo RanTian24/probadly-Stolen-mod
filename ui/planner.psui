@@ -1,0 +1,211 @@
+# planner.psui — 模组规划器主面板 v0.5.1 (CustomUI 后端, 无 slot): 形状池输入(2x2/3格/凹形), 移除F7校准器
+#
+# 功能:
+#   ① 图标图鉴: 17 种模组的游戏原版贴图 (icons/*.png, wiki 提取) — 静态常驻
+#   ② 筛选: 类别下拉 + 优化目标下拉 + 「只看已持有」开关 (on_change 只存状态)
+#   ③ 最优组合: 舱位宽高 → 「计算最优组合」→ ASCII 网格排版 (游戏TMP字体缺 ◻◼ 字形)
+#   ④ 仓库总览: 背包/店内储物/全店 逐件枚举 + 店内机器盘点 → 「刷新仓库数据」
+#   ⑤ 图鉴列表: 文字版全模组 (动态)
+#
+# 联动: 计算结果写入包级 state → 台面「排版预览台」双击=游戏原生槽位渲染(图2效果)
+# 结构: 静态元素树固定, 数量不定列表交给 on_build 动态构建
+
+window planner:
+  title: "深空当铺 · 模组规划器 v0.4.2"
+  size: 720x920
+  draggable: true
+  close_on_escape: true
+  on_build: build_panel
+
+  # ---- 标题与提示 ----
+  label lbl_title:
+    text: "—— 模组规划器 · 图鉴 / 筛选 / 最优组合 / 仓库总览 / 排版 ——"
+  label lbl_hint:
+    text: "F5 规划(舱7x5) · 预览台=把你真实模组试装进舱 (游戏按真实形状摆放)"
+
+  # ---- 图标图鉴 (静态, 游戏原版贴图; png 缺失的自动跳过只留名) ----
+  grid icon_grid:
+    columns: 9
+    cell: 76x62
+    spacing: 2
+    column:
+      image ic1:
+        src: "pack:mp_blank"
+        size: 40x40
+      label:
+        text: "空白"
+    column:
+      image ic2:
+        src: "pack:mp_perf"
+        size: 40x40
+      label:
+        text: "性能"
+    column:
+      image ic3:
+        src: "pack:mp_eff"
+        size: 40x40
+      label:
+        text: "效率"
+    column:
+      image ic4:
+        src: "pack:mp_qual"
+        size: 40x40
+      label:
+        text: "质量"
+    column:
+      image ic5:
+        src: "pack:mp_oc"
+        size: 40x40
+      label:
+        text: "超频"
+    column:
+      image ic6:
+        src: "pack:mp_eco"
+        size: 40x40
+      label:
+        text: "环保"
+    column:
+      image ic7:
+        src: "pack:mp_stream"
+        size: 40x40
+      label:
+        text: "优化"
+    column:
+      image ic8:
+        src: "pack:mp_fine"
+        size: 40x40
+      label:
+        text: "精炼"
+    column:
+      image ic9:
+        src: "pack:mp_neural"
+        size: 40x40
+      label:
+        text: "核心"
+    column:
+      image ic10:
+        src: "pack:mp_corrupt"
+        size: 40x40
+      label:
+        text: "损坏"
+    column:
+      image ic11:
+        src: "pack:mp_ruined"
+        size: 40x40
+      label:
+        text: "报废"
+    column:
+      image ic12:
+        src: "pack:mp_node_s"
+        size: 40x40
+      label:
+        text: "节点S"
+    column:
+      image ic13:
+        src: "pack:mp_node_m"
+        size: 40x40
+      label:
+        text: "节点M"
+    column:
+      image ic14:
+        src: "pack:mp_alarm"
+        size: 40x40
+      label:
+        text: "警报"
+    column:
+      image ic15:
+        src: "pack:mp_furn_blast"
+        size: 40x40
+      label:
+        text: "高炉"
+    column:
+      image ic16:
+        src: "pack:mp_furn_junk"
+        size: 40x40
+      label:
+        text: "垃圾炉"
+    column:
+      image ic17:
+        src: "pack:mp_chem"
+        size: 40x40
+      label:
+        text: "化学"
+
+  # ---- 筛选区 ----
+  column filter_col:
+    spacing: 4
+    row:
+      spacing: 8
+      dropdown dd_category:
+        label: "类别"
+        options: ["全部", "通用", "节点", "专用"]
+        index: 0
+        on_change: on_filter
+      dropdown dd_target:
+        label: "最优目标"
+        options: ["均衡", "纯性能", "纯效率", "纯质量", "节点增效"]
+        index: 0
+        on_change: on_filter
+      toggle tg_owned:
+        label: "只看已持有"
+        checked: false
+        on_change: on_filter
+  label lbl_filter_fb:
+    text: "筛选已选: 类别=全部 · 目标=均衡 · 只看已持有=否 → 点「计算最优组合」应用"
+
+  # ---- 舱位与计算区 ----
+  row calc_row:
+    spacing: 8
+    dropdown dd_shape:
+      label: "舱形"
+      options: ["基础(中心十字洞)", "扩展(仅四角洞)"]
+      index: 0
+      on_change: on_shape_dd
+    button btn_calc:
+      text: "计算最优组合"
+      on_click: on_calc
+  row pool_row:
+    spacing: 8
+    label:
+      text: "模组形状(随机): 2x2 ×"
+    input inp_22:
+      text: "2"
+    label:
+      text: " 3格形 ×"
+    input inp_l3:
+      text: "2"
+    label:
+      text: " 凹形 ×"
+    input inp_u5:
+      text: "1"
+  label lbl_result:
+    text: "结果: 尚未计算"
+
+  # ---- 排版可视化 (动态区, ASCII 网格) ----
+  label lbl_layout_title:
+    text: "↓ 排版方案 (A=2x2 B=3格 C=凹形 X=洞 · 舱7x5 · 贴图版双击「排版预览台」试装) ↓"
+  scroll layout_view:
+    height: 100
+
+  # ---- 仓库总览 (动态区: 全区域逐件枚举 + 店内机器) ----
+  label lbl_stash_title:
+    text: "↓ 仓库总览 (背包/店内储物/全店 · 实时) ↓"
+  row stash_row:
+    spacing: 8
+    button btn_stash:
+      text: "刷新仓库数据"
+      on_click: on_stash
+    button btn_scout:
+      text: "侦察模组真id"
+      on_click: on_scout
+  scroll stash_view:
+    height: 150
+
+  label lbl_scout:
+    text: "(未侦察) 点「侦察模组真id」: ✔=id有效 ✘=游戏无此id; 再把真模组放展示柜对照真实id"
+
+  # ---- 全模组图鉴汇总 (动态区) ----
+  label lbl_catalog_title:
+    text: "↓ 全模组图鉴汇总 (按筛选展示) ↓"
+  scroll catalog_view:
+    height: 130

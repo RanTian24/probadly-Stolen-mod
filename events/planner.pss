@@ -1,0 +1,583 @@
+# planner.pss — 模组规划器核心逻辑 (v0.5.1)
+# v0.5.1: 删除 F7 校准器(用户不需要); 排布计算改为形状池贪心(用户实测: 模组形状随机三种
+#         2x2 / 3格形(10,11) / 凹形(111,101)); 预览台改为试装背包+后仓真实模组
+# v0.5.0 (按用户重置需求+实测数据):
+#   需求1: 排布已有模组的规划器 (本 mod 核心)
+#   需求2: 枚举已有模组(背包/后仓/展示柜/店内各处); 机器模组槽内已装的 v2.0.1 框架读不到, 总览注明
+#   需求3: 图鉴分类+形状+属性; 舱形按用户实测 7x5 两种 — 基础(中心十字洞)/扩展(仅四角洞)
+#   舱宽高输入废弃(舱固定7x5), 改舱形下拉; 计算与预览统一走 35 格形状数组
+#
+# 职责:
+#   ① 全模组数据库 MODULES (类别/三项属性/价值/估计占格), 供图鉴汇总与筛选
+#   ② 仓库总览: 逐件枚举 (每件一行, 各自实时属性/损坏/损耗)
+#      范围: find_all(背包+店铺储物区,含容器嵌套) + machine.find(全店15处:
+#      台面/机械区/储藏区/暗格等, 每类补探1件, uid去重) — 不用 items.browse/inventory(兼容2.0.1)
+#   ③ 最优组合 + 排版: 舱位 WxH 贪心组合; F5 内文字版排版(字母标记+逐件图例);
+#      游戏内原生贴图排版走「排版预览台」机器面板(grid_slot, 框架限制: 键位面板无此能力)
+#
+# v0.4.4: 新增「模组id侦察器」(F5按钮) — find_all 逐个验证候选id + showcase_items
+#         枚举展示柜真物品; 根因: MODULES 疑似id与游戏不符 → machine_spawn 静默失败
+# v0.4.3: 新增 F7「舱形校准器」— 8x6 点格画洞, machine.find 跨面板取预览台句柄后
+#         machine_set_shape 即时生效; 预览台形状模式支持 custom (自画舱形)
+# v0.4.2: game_loaded 补发判断加 machine.find 全店查(修台面放置后读档重复发放) / 版本号统一
+# v0.4.1: 预览台 5 按钮漏绑 on_click 修复(见 ui/preview.psui) / shape 串长修正(见 events/preview.pss)
+# v0.3.1: 排版预览整合进 F5 面板(字母标记网格+逐件图例); 文案清理
+# v0.4.0: 恢复「排版预览台」— 用户确认需要游戏内原生贴图排版; 框架限制:
+#         原生槽位渲染(grid_slot)只能挂机器面板, F5 键位面板做不到
+#         → 预览台放台面双击即可, 无需后仓
+#         仓库总览加位置推断: 展示柜精确(shop.showcase_items) / 背包+后仓 /
+#         店内其他区域(台面/储藏区/暗格等, 框架无逐区域API)
+# v0.3.0: 逐件枚举 / machine.find 全店扩展扫描 / 移除 items.browse 依赖
+# v0.2.0: 仓库总览区 / ASCII 网格(游戏TMP字体缺 ◻◼ 字形)
+# v0.1.1: on_change 只存状态不 rebuild; 构建期不 get_value; 刷新统一按钮触发
+#
+# 语法约束: 4空格缩进; 无列表推导式/字符串切片/sort → for循环/二维数组/插入排序
+# 数据源: 舱形=用户游戏内实测(2026-10-19); 模组id/形状以侦察器与用户提供为准
+
+const PACK = "module_planner"
+
+# ============ ① 模组数据库 ============
+var MODULES = [
+    {id = "blank_module", name = "空白模组", cat = "general", p = 0, e = 0, q = 0, value = 60, sw = 2, sh = 2},
+    {id = "system_module_performance", name = "性能模组", cat = "general", p = 16, e = 0, q = 0, value = 70, sw = 2, sh = 2},
+    {id = "system_module_efficiancy", name = "效率模组", cat = "general", p = 0, e = 16, q = 0, value = 70, sw = 2, sh = 2},
+    {id = "system_module_quality", name = "质量模组", cat = "general", p = 0, e = 0, q = 8, value = 70, sw = 2, sh = 2},
+    {id = "system_module_overclock", name = "超频模组", cat = "general", p = 36, e = -44, q = 0, value = 100, sw = 2, sh = 2},
+    {id = "system_module_eco", name = "环保模组", cat = "general", p = -16, e = 32, q = 0, value = 100, sw = 2, sh = 2},
+    {id = "system_module_streamlining", name = "优化模组", cat = "general", p = 8, e = 25, q = -16, value = 125, sw = 2, sh = 2},
+    {id = "system_module_fineness", name = "精炼模组", cat = "general", p = -8, e = -15, q = 25, value = 100, sw = 2, sh = 2},
+    {id = "system_capped_neural_core", name = "神经核心(受限)", cat = "general", p = 100, e = -100, q = 50, value = 250, sw = 2, sh = 2},
+    {id = "system_module_corrupt", name = "损坏模组", cat = "general", p = -8, e = -5, q = 0, value = 45, sw = 2, sh = 2},
+    {id = "system_module_ruined", name = "报废模组", cat = "general", p = 0, e = 0, q = 0, value = 30, sw = 2, sh = 2},
+    {id = "node_small", name = "节点(小)", cat = "node", p = 0, e = 0, q = 0, value = 50, sw = 1, sh = 1},
+    {id = "node_medium", name = "节点(中)", cat = "node", p = 0, e = 0, q = 0, value = 50, sw = 2, sh = 1},
+    {id = "alarm_module_transmitter", name = "警报传输模组", cat = "special", p = 0, e = -50, q = 0, value = 100, sw = 2, sh = 2},
+    {id = "furnace_module_blast", name = "熔炉模组(高炉)", cat = "special", p = 0, e = -100, q = 0, value = 150, sw = 4, sh = 1},
+    {id = "furnace_module_junk", name = "熔炉模组(垃圾处理)", cat = "special", p = 0, e = 0, q = 0, value = 120, sw = 4, sh = 1},
+    {id = "chem_module", name = "化学设备模块", cat = "special", p = 0, e = 0, q = 0, value = 250, sw = 2, sh = 2}
+]
+
+# 预览台试装用: 全部候选 id (经 state 传给 preview.pss; id 校准后此表与 MODULES 同步改)
+state.set("mp_module_ids", ["blank_module", "system_module_performance", "system_module_efficiancy", "system_module_quality", "system_module_overclock", "system_module_eco", "system_module_streamlining", "system_module_fineness", "system_capped_neural_core", "system_module_corrupt", "system_module_ruined", "node_small", "node_medium", "alarm_module_transmitter", "furnace_module_blast", "furnace_module_junk", "chem_module"])
+
+var CAT_LABELS = {general = "通用", node = "节点", special = "专用"}
+
+# 店内机器盘点用的常见机器 id (来自 wiki 物品库; machine.find 全店15处探测)
+var MACHINE_IDS = ["furnace", "desequencer", "moisture_collector", "wine_rack", "mirage", "security_alarm", "module_extractor", "purifier", "recharger", "projector"]
+
+# ============ 状态变量 ============
+var g_cat = 0
+var g_target = 0
+var g_owned = false
+var g_result_line = "结果: 尚未计算"
+var g_calculated = false
+# 舱形选择: base=基础(中心十字洞) / ext=扩展(仅四角洞) / custom=F7自画; 舱固定 7x5
+var g_shape_sel = "base"
+
+# 顶层: 绑定 F5 打开面板
+ui.bind_key("F5", "module_planner:planner")
+
+# ============ 工具函数 ============
+
+func target_name(idx):
+    if idx == 1: return "性能"
+    if idx == 2: return "效率"
+    if idx == 3: return "质量"
+    if idx == 4: return "节点增效"
+    return "均衡"
+
+func cat_match(m, cat_idx):
+    if cat_idx == 0: return true
+    var key = "general"
+    if cat_idx == 2: key = "node"
+    if cat_idx == 3: key = "special"
+    return m.cat == key
+
+func find_mod(id):
+    for m in MODULES:
+        if m.id == id:
+            return m
+    return null
+
+# 单件模组实时状态: TEMP(当前生效) 优先, 回退 BONUS(模板基值); 损坏/退化判定
+func mod_status(h, m):
+    var p = items.tag_get_int(h, "TEMP_PERCENTAGE_PERFORMANCE_INT")
+    if p == null:
+        p = items.tag_get_int(h, "BONUS_PERCENTAGE_PERFORMANCE_INT")
+    var e = items.tag_get_int(h, "TEMP_PERCENTAGE_EFFICIENCY_INT")
+    if e == null:
+        e = items.tag_get_int(h, "BONUS_PERCENTAGE_EFFICIENCY_INT")
+    var q = items.tag_get_int(h, "TEMP_PERCENTAGE_QUALITY_INT")
+    if q == null:
+        q = items.tag_get_int(h, "BONUS_PERCENTAGE_QUALITY_INT")
+    var flag = "正常"
+    if m.id == "system_module_corrupt":
+        flag = "损坏"
+    if m.id == "system_module_ruined":
+        flag = "报废"
+    if flag == "正常":
+        var bp = items.tag_get_int(h, "BONUS_PERCENTAGE_PERFORMANCE_INT")
+        if bp != null and p != null and p < bp:
+            flag = "已损耗"
+    return {p = p, e = e, q = q, flag = flag}
+
+# 扫描某模组的句柄列表 → 数量与状态汇总 (scan_all_owned 候选用)
+func scan_mod(handles, m):
+    var n = len(handles)
+    var p = m.p
+    var e = m.e
+    var q = m.q
+    var n_ok = 0
+    var n_worn = 0
+    var first_worn = ""
+    if n > 0:
+        var h0 = handles[0]
+        var st = mod_status(h0, m)
+        p = st.p
+        e = st.e
+        q = st.q
+        for h in handles:
+            var s2 = mod_status(h, m)
+            if s2.flag == "正常":
+                n_ok += 1
+            else:
+                n_worn += 1
+                if first_worn == "":
+                    first_worn = s2.flag
+    var stat = "无"
+    if n > 0 and n_worn == 0:
+        stat = "全部正常"
+    if n_worn > 0:
+        stat = "{first_worn}×{n_worn}"
+        if n_ok > 0:
+            stat = "{stat} 正常×{n_ok}"
+    return {n = n, p = p, e = e, q = q, stat = stat}
+
+func score(m, target):
+    if target == 1: return m.p
+    if target == 2: return m.e
+    if target == 3: return m.q
+    if target == 4: return m.p + m.e + (m.q * 0.5) + (m.value * 0.05)
+    return m.p + m.e + m.q
+
+# ============ on_build 构建期 ============
+
+func build_panel():
+    apply_filter_text()
+    build_catalog()
+    build_layout()
+    build_stash()
+
+func apply_filter_text():
+    var cs = "全部"
+    if g_cat == 1: cs = "通用"
+    if g_cat == 2: cs = "节点"
+    if g_cat == 3: cs = "专用"
+    var ow = "否"
+    if g_owned: ow = "是"
+    ui.set_text("lbl_filter_fb", "筛选已选: 类别={cs} · 目标={target_name(g_target)} · 只看已持有={ow} → 点「计算最优组合」应用")
+    ui.set_text("lbl_result", g_result_line)
+
+# 候选模组: 应用筛选 + 可选只看已持有 (不含列表推导式)
+func candidates():
+    var data = []
+    if g_owned:
+        data = scan_all_owned()
+    else:
+        for m in MODULES:
+            push(data, {id = m.id, name = m.name, cat = m.cat, p = m.p, e = m.e, q = m.q, value = m.value, sw = m.sw, sh = m.sh, owned = 0})
+    var out = []
+    for m in data:
+        if cat_match(m, g_cat):
+            if not g_owned or m.owned > 0:
+                push(out, m)
+    return out
+
+# 全库扫描: 每种模组的实时持有 (find_all, 含容器嵌套)
+func scan_all_owned():
+    var out = []
+    for m in MODULES:
+        var handles = items.find_all(m.id)
+        var total = 0
+        var p = m.p
+        var e = m.e
+        var q = m.q
+        if len(handles) > 0:
+            var agg = scan_mod(handles, m)
+            total = agg.n
+            p = agg.p
+            e = agg.e
+            q = agg.q
+        push(out, {id = m.id, name = m.name, cat = m.cat, p = p, e = e, q = q, value = m.value, sw = m.sw, sh = m.sh, owned = total})
+    return out
+
+# 单种模组的扫描 (复用 scan_mod)
+func scan_owned():
+    return scan_all_owned()
+
+# ---- ② 图鉴汇总 ----
+func build_catalog():
+    ui.build_begin("catalog_view")
+    var data = candidates()
+    if len(data) == 0:
+        ui.build_label("(无匹配模组) 调整筛选后点「计算最优组合」刷新")
+    else:
+        for m in data:
+            var row_txt = "[{CAT_LABELS[m.cat]}] {m.name}  性{m.p}/效{m.e}/质{m.q}  值{m.value}"
+            if m.owned > 0:
+                row_txt = "{row_txt}  (已持有×{m.owned})"
+            ui.build_row()
+            ui.build_label(row_txt)
+            ui.build_end()
+    ui.build_end()
+
+# ---- ④ 排版网格渲染 (F5 内预览: 每件一个字母标记, 图例逐件枚举) ----
+# 标记跳过 I/O (易与 1/0 混淆), 24 个恰好覆盖 placed 上限
+var MARKS = ["A","B","C","D","E","F","G","H","J","K","L","M","N","P","Q","R","S","T","U","V","W","X","Y","Z"]
+
+func build_layout():
+    ui.build_begin("layout_view")
+    if not g_calculated:
+        ui.build_label("(尚未计算) 填好下方形状数量, 点「计算最优组合」")
+        ui.build_end()
+        return
+    var placed = compute_optimal()
+    var w = 7
+    var h = 5
+    var shape_v = shape_cells(g_shape_sel)
+    var grid = []
+    for i2 in range(h):
+        var line = []
+        for j2 in range(w):
+            if shape_v[i2 * 7 + j2] == 1:
+                push(line, "X")
+            else:
+                push(line, ".")
+        push(grid, line)
+    var km = ["A", "B", "C"]
+    for pl in placed:
+        for i3 in range(pl.h):
+            for j3 in range(pl.w):
+                if pl.row + i3 < h and pl.col + j3 < w:
+                    grid[pl.row + i3][pl.col + j3] = km[pl.kind]
+    for line in grid:
+        ui.build_label(join(line, ""))
+    # 图例 (按形状类型统计 — 模组形状随机, 同类归并)
+    var c0 = 0
+    var c1 = 0
+    var c2 = 0
+    for pl in placed:
+        if pl.kind == 0: c0 += 1
+        if pl.kind == 1: c1 += 1
+        if pl.kind == 2: c2 += 1
+    ui.build_label("--- 图例 ---")
+    if c0 > 0:
+        ui.build_label("A = 2x2 模组 ×{c0}")
+    if c1 > 0:
+        ui.build_label("B = 3格形 (2宽2高缺右上) ×{c1}")
+    if c2 > 0:
+        ui.build_label("C = 凹形 (3宽2高中下缺) ×{c2}")
+    if len(placed) == 0:
+        ui.build_label("(一个都放不下) 检查形状数量或换个舱形")
+    ui.build_label("放置 {len(placed)} 件 · 舱形 {shape_label(g_shape_sel)} · 模组形状随机, 以游戏内实际为准")
+    ui.build_label("→ 双击「排版预览台」= 把你背包/后仓的真实模组试装进舱 (游戏按真实形状摆放)")
+    ui.build_end()
+
+# ============ ⑤ 仓库总览 ============
+
+func build_stash():
+    ui.build_begin("stash_view")
+    # 位置定位: 展示柜可精确枚举(v1.7.0); 背包/后仓为合并区间; 其余店内区域合并探测
+    var showcase = shop.showcase_items()
+    if showcase == null:
+        showcase = []
+    var any = false
+    for m in MODULES:
+        var handles = items.find_all(m.id)
+        # 展示柜命中 (uid 比对, 精确位置)
+        var sc_hits = []
+        for sc in showcase:
+            if sc.id == m.id:
+                push(sc_hits, sc)
+        # machine.find 全店15处补探: 排除已归类的 uid → 剩余记"店内其他区域"
+        var extra = null
+        var ex = machine.find(m.id)
+        if ex != null:
+            var dup = false
+            for h in handles:
+                if h.uid == ex.uid:
+                    dup = true
+            if not dup:
+                for sc in sc_hits:
+                    if sc.uid == ex.uid:
+                        dup = true
+            if not dup:
+                extra = ex
+        if len(handles) == 0 and len(sc_hits) == 0 and extra == null:
+            continue
+        any = true
+        if len(handles) > 0:
+            ui.build_label("> {m.name} [{CAT_LABELS[m.cat]}] 背包/后仓 ×{len(handles)}:")
+            var idx = 0
+            for h in handles:
+                idx += 1
+                var st = mod_status(h, m)
+                ui.build_row()
+                ui.build_label("   #{idx} · 实时 性{st.p}/效{st.e}/质{st.q} · {st.flag}")
+                ui.build_end()
+        if len(sc_hits) > 0:
+            ui.build_label("> {m.name} [{CAT_LABELS[m.cat]}] 展示柜 ×{len(sc_hits)}:")
+            var idx2 = 0
+            for sc in sc_hits:
+                idx2 += 1
+                var st2 = mod_status(sc, m)
+                ui.build_row()
+                ui.build_label("   #{idx2} · 实时 性{st2.p}/效{st2.e}/质{st2.q} · {st2.flag}")
+                ui.build_end()
+        if extra != null:
+            var st3 = mod_status(extra, m)
+            ui.build_row()
+            ui.build_label("> {m.name} [{CAT_LABELS[m.cat]}] ×1 在店内其他区域(台面/储藏区/暗格等) · 实时 性{st3.p}/效{st3.e}/质{st3.q} · {st3.flag}")
+            ui.build_end()
+    if not any:
+        ui.build_label("(暂未发现任何模组 — 放几件模组到背包/台面/储藏区后点「刷新仓库」)")
+    ui.build_label("— 位置精度: 展示柜=精确 | 背包与后仓=框架无法区分 | 台面/储藏区/暗格等=合并探测 —")
+    ui.build_label("注: 已安装在机器模组槽内的模组, 当前框架(v2.0.1)读不到, 未计入以上统计")
+    # 店内机器盘点: 硬编码 id 探测 (不用 items.browse, 兼容 2.0.1)
+    var mach_names = ""
+    var mach_cnt = 0
+    for mid_ in MACHINE_IDS:
+        var mm = machine.find(mid_)
+        if mm != null:
+            mach_cnt += 1
+            if mach_names == "":
+                mach_names = mid_
+            else:
+                mach_names = "{mach_names}, {mid_}"
+    if mach_cnt > 0:
+        ui.build_label("店内机器 {mach_cnt} 台: {mach_names}")
+    else:
+        ui.build_label("店内机器: 0 台")
+    ui.build_label("原版机器舱位内已装模组: 框架无读取API | 走私者暗格内部: 框架无读取API")
+    ui.build_end()
+
+# ============ ③ 最优组合计算 ============
+
+# 舱形数据 (7x5=35格, 行优先, 1=不能安放) — 用户实测 2026-10-19
+func shape_base_cells():
+    return [1,0,0,0,0,0,1, 0,0,0,1,0,0,0, 0,0,1,1,1,0,0, 0,0,0,1,0,0,0, 1,0,0,0,0,0,1]
+
+func shape_ext_cells():
+    return [1,0,0,0,0,0,1, 0,0,0,0,0,0,0, 0,0,0,0,0,0,0, 0,0,0,0,0,0,0, 1,0,0,0,0,0,1]
+
+func shape_cells(mode):
+    if mode == "ext":
+        return shape_ext_cells()
+    if mode == "custom":
+        var cells = state.get("mp_shape_custom")
+        if cells == null:
+            return shape_base_cells()
+        if len(cells) != 35:
+            return shape_base_cells()
+        return cells
+    return shape_base_cells()
+
+func shape_label(mode):
+    if mode == "ext":
+        return "扩展舱形(仅四角洞)"
+    if mode == "custom":
+        return "自定义(F7画)"
+    return "基础舱形(中心十字洞)"
+
+func build_shape_str(cells):
+    var s = ""
+    for v in cells:
+        if v == 1:
+            s = s + "1"
+        else:
+            s = s + "0"
+    return s
+
+# 形状池: 用户实测 — 模组形状随机三种 (0=2x2, 1=3格形(2宽2高缺右上), 2=凹形(3宽2高中下缺))
+func read_int(elem_id, dft):
+    var v = ui.get_value(elem_id)
+    if v == null:
+        return dft
+    if v == "":
+        return dft
+    return int(v)
+
+func shape_pool():
+    var n1 = read_int("inp_22", 2)
+    var n2 = read_int("inp_l3", 2)
+    var n3 = read_int("inp_u5", 1)
+    if n1 < 0: n1 = 0
+    if n2 < 0: n2 = 0
+    if n3 < 0: n3 = 0
+    if n1 > 20: n1 = 20
+    if n2 > 20: n2 = 20
+    if n3 > 20: n3 = 20
+    var pool = []
+    # 面积降序放置: 凹(5格) > 2x2(4格) > 3格形(3格)
+    for i in range(n3):
+        push(pool, {kind = 2, w = 3, h = 2, cells = [1,1,1, 1,0,1]})
+    for i in range(n1):
+        push(pool, {kind = 0, w = 2, h = 2, cells = [1,1, 1,1]})
+    for i in range(n2):
+        push(pool, {kind = 1, w = 2, h = 2, cells = [1,0, 1,1]})
+    return pool
+
+func can_place_shape(cells, c, r, shp, pw, ph, w, h):
+    for i in range(ph):
+        for j in range(pw):
+            if shp[i * pw + j] == 1:
+                if c + j >= w:
+                    return false
+                if r + i >= h:
+                    return false
+                if cells[r + i][c + j]:
+                    return false
+    return true
+
+func place_shape(cells, c, r, shp, pw, ph):
+    for i in range(ph):
+        for j in range(pw):
+            if shp[i * pw + j] == 1:
+                cells[r + i][c + j] = true
+
+# 排布计算 = 形状池贪心: 洞位并入占用, 逐件找第一个可放位
+func compute_optimal():
+    var w = 7
+    var h = 5
+    var shape = shape_cells(g_shape_sel)
+    var cells = []
+    for i in range(h):
+        var row_ar = []
+        for j in range(w):
+            if shape[i * 7 + j] == 1:
+                push(row_ar, true)
+            else:
+                push(row_ar, false)
+        push(cells, row_ar)
+    var pool = shape_pool()
+    var placed = []
+    for pi in range(len(pool)):
+        var shp = pool[pi]
+        var done = false
+        for r in range(h):
+            for c in range(w):
+                if not done and can_place_shape(cells, c, r, shp.cells, shp.w, shp.h, w, h):
+                    place_shape(cells, c, r, shp.cells, shp.w, shp.h)
+                    push(placed, {kind = shp.kind, w = shp.w, h = shp.h, col = c, row = r})
+                    done = true
+    state.set("mp_last_placed", placed)
+    return placed
+
+# 无匹配时的兜底全库候选 (重建)
+func candidates_for_all():
+    var out = []
+    for m in MODULES:
+        push(out, {id = m.id, name = m.name, cat = m.cat, p = m.p, e = m.e, q = m.q, value = m.value, sw = m.sw, sh = m.sh, owned = 0})
+    return out
+
+func can_place(cells, c, r, sw, sh, w, h):
+    if c + sw > w: return false
+    if r + sh > h: return false
+    for i in range(sh):
+        for j in range(sw):
+            if cells[r+i][c+j]:
+                return false
+    return true
+
+func place(cells, c, r, sw, sh):
+    for i in range(sh):
+        for j in range(sw):
+            cells[r+i][c+j] = true
+
+# 目标方向得分降序 (插入排序)
+func sorted_desc(arr, target):
+    var n = len(arr)
+    var copy = []
+    for m in arr: push(copy, m)
+    for i in range(1, n):
+        var key = copy[i]
+        var j = i - 1
+        while j >= 0 and score(copy[j], target) < score(key, target):
+            copy[j+1] = copy[j]
+            j = j - 1
+        copy[j+1] = key
+    return copy
+
+# ============ 交互回调 ============
+
+# 官方模式: on_change 只更新状态与文本, 不 rebuild
+func on_filter(ev):
+    if ev.elem == "dd_category":
+        g_cat = ev.value
+    if ev.elem == "dd_target":
+        g_target = ev.value
+    if ev.elem == "tg_owned":
+        if ev.value: g_owned = true
+        else: g_owned = false
+    apply_filter_text()
+
+# 官方模式: on_change 只更新状态与文本, 不 rebuild
+func on_shape_dd(ev):
+    if ev.value == 1:
+        g_shape_sel = "ext"
+    else:
+        g_shape_sel = "base"
+
+# 按钮回调里 rebuild = 官方认证刷新模式
+func on_calc():
+    g_calculated = true
+    g_result_line = "结果: 计算完成 · 舱位 7x5 · {shape_label(g_shape_sel)} · 换筛选后再点一次即刷新"
+    ui.rebuild("planner")
+
+# 仓库总览刷新: 实时重扫全区域
+func on_stash():
+    g_result_line = "结果: 仓库数据已刷新"
+    apply_filter_text()
+    ui.rebuild("planner")
+
+# ============ 事件订阅 ============
+
+# ============ ⑦ 模组 id 侦察器 ============
+# MODULES 的 id 必须与游戏真实物品 id 完全一致, 否则 machine_spawn 静默失败(返回null)
+# → 表现为"预览台只放入个别件且货不对板"。本侦察器双路取证:
+#   [1] items.find_all 逐个验证 MODULES 候选 id (搜背包+后仓; 无效id → 空结果)
+#   [2] shop.showcase_items() 全量枚举展示柜真物品句柄 → 直接暴露真实 id
+# 用法: 真模组留在背包或放上展示柜 → F5 点「侦察模组真id」→ 对照结果修正 MODULES
+func on_scout():
+    var lines = []
+    push(lines, "== [1] 候选id验证 (搜背包+后仓) ==")
+    for m in MODULES:
+        var hs = items.find_all(m.id)
+        if hs == null:
+            push(lines, "✘ {m.id}  ← id无效/未持有 ({m.name})")
+        else:
+            if len(hs) == 0:
+                push(lines, "? {m.id}  身上没有, 无法确证 ({m.name})")
+            else:
+                push(lines, "✔ {m.id}  {m.name} ×{len(hs)}")
+    push(lines, "== [2] 展示柜真物品id (把真模组放展示柜再点) ==")
+    var sc = shop.showcase_items()
+    if sc == null:
+        push(lines, "(showcase_items 不可用)")
+    else:
+        if len(sc) == 0:
+            push(lines, "(展示柜上没有物品)")
+        else:
+            for h in sc:
+                push(lines, "id={h.id} ×{h.count}")
+    ui.set_text("lbl_scout", join(lines, "\n"))
+    log.info("[{PACK}] 模组id侦察完成, 结果已显示在F5面板仓库总览下方")
+
+on game_loaded():
+    # 自动补发预览台: items.has 只搜背包+后仓; 放在台面/店内的台子须再查 machine.find(全店15处)
+    # 否则放台面的预览台读档后会被判"不存在"而重复发放 (刷物品 bug, v0.4.2 修复)
+    if not items.has("module_planner:preview_bench"):
+        if machine.find("module_planner:preview_bench") == null:
+            items.give("module_planner:preview_bench", 1)
+            log.info("[{PACK}] 已发放「排版预览台」×1 → 放台面上双击打开")
+    log.info("[{PACK}] 模组规划器 v0.5.1 就绪: F5=规划(舱形/形状池/侦察) | 台面双击「排版预览台」=真实模组试装")
